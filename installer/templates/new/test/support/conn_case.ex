@@ -4,7 +4,7 @@ defmodule <%= application_module %>.ConnCase do
   tests that require setting up a connection.
 
   Such tests rely on `Phoenix.ConnTest` and also
-  imports other functionality to make it easier
+  import other functionality to make it easier
   to build and query models.
 
   Finally, if the test case interacts with the database,
@@ -23,7 +23,7 @@ defmodule <%= application_module %>.ConnCase do
       alias <%= application_module %>.Repo
       import Ecto
       import Ecto.Changeset
-      import Ecto.Query, only: [from: 1, from: 2]
+      import Ecto.Query
 <% end %>
       import <%= application_module %>.Router.Helpers
 
@@ -33,10 +33,12 @@ defmodule <%= application_module %>.ConnCase do
   end
 
   setup tags do
-<%= if ecto do %>    unless tags[:async] do
-      <%= adapter_config[:test_restart] %>
+<%= if ecto do %>    <%= adapter_config[:test_setup] %>
+
+    unless tags[:async] do
+      <%= adapter_config[:test_async] %>
     end
 <% end %>
-    {:ok, conn: Phoenix.ConnTest.conn()}
+    {:ok, conn: Phoenix.ConnTest.build_conn()}
   end
 end

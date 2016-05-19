@@ -265,9 +265,11 @@ defmodule Phoenix.Controller.ControllerTest do
     assert get_format(conn) == "json"
     assert conn.params["_format"] == "json"
 
-    conn = accepts conn(:get, "/", _format: "json"), ~w(html)
-    assert conn.status == 406
-    assert conn.halted
+    exception = assert_raise Phoenix.NotAcceptableError, ~r/unknown format "json"/, fn ->
+      accepts conn(:get, "/", _format: "json"), ~w(html)
+    end
+    assert Plug.Exception.status(exception) == 406
+    assert exception.accepts == ["html"]
   end
 
   test "accepts/2 uses first accepts on empty or catch-all header" do
@@ -327,9 +329,11 @@ defmodule Phoenix.Controller.ControllerTest do
     assert get_format(conn) == "json"
     assert conn.params["_format"] == nil
 
-    conn = accepts with_accept("text/html; q=0.7, application/json; q=0.8"), ~w(xml)
-    assert conn.halted
-    assert conn.status == 406
+    exception = assert_raise Phoenix.NotAcceptableError, ~r/no supported media type in accept/, fn ->
+      accepts with_accept("text/html; q=0.7, application/json; q=0.8"), ~w(xml)
+    end
+    assert Plug.Exception.status(exception) == 406
+    assert exception.accepts == ["xml"]
   end
 
   test "scrub_params/2 raises Phoenix.MissingParamError for missing key" do
@@ -404,6 +408,12 @@ defmodule Phoenix.Controller.ControllerTest do
     assert get_resp_header(conn, "x-frame-options") == ["SAMEORIGIN"]
     assert get_resp_header(conn, "x-xss-protection") == ["1; mode=block"]
     assert get_resp_header(conn, "x-content-type-options") == ["nosniff"]
+
+    custom_headers = %{"x-frame-options" => "custom", "foo" => "bar"}
+    conn = conn(:get, "/") |> put_secure_browser_headers(custom_headers)
+    assert get_resp_header(conn, "x-frame-options") == ["custom"]
+    assert get_resp_header(conn, "x-xss-protection") == ["1; mode=block"]
+    assert get_resp_header(conn, "foo") == ["bar"]
   end
 
   test "__view__ returns the view module based on controller module" do

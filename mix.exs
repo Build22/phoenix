@@ -1,12 +1,12 @@
 defmodule Phoenix.Mixfile do
   use Mix.Project
 
-  @version "1.1.3-dev"
+  @version "1.2.0-rc.0"
 
   def project do
     [app: :phoenix,
      version: @version,
-     elixir: "~> 1.0.2 or ~> 1.1",
+     elixir: "~> 1.2",
      deps: deps,
      package: package,
 
@@ -40,7 +40,8 @@ defmodule Phoenix.Mixfile do
   defp deps do
     [{:cowboy, "~> 1.0", optional: true},
      {:plug, "~> 1.0"},
-     {:poison, "~> 1.3"},
+     {:phoenix_pubsub, "~> 1.0.0-rc"},
+     {:poison, "~> 1.5 or ~> 2.0"},
      {:gettext, "~> 0.8", only: :test},
 
      # Docs dependencies
@@ -49,7 +50,7 @@ defmodule Phoenix.Mixfile do
      {:inch_ex, "~> 0.2", only: :docs},
 
      # Test dependencies
-     {:phoenix_html, "~> 1.2", only: :test},
+     {:phoenix_html, "~> 2.4", only: :test},
      {:websocket_client, git: "https://github.com/jeremyong/websocket_client.git", only: :test}]
   end
 
@@ -58,7 +59,7 @@ defmodule Phoenix.Mixfile do
                     "Jason Stiebs", "Eric Meadows-Jönsson", "Sonny Scroggin"],
      licenses: ["MIT"],
      links: %{github: "https://github.com/phoenixframework/phoenix"},
-     files: ~w(lib priv test/shared web) ++
+     files: ~w(lib priv web) ++
             ~w(brunch-config.js CHANGELOG.md LICENSE.md mix.exs package.json README.md)]
   end
 end

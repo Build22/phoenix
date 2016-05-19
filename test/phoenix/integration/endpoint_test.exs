@@ -1,7 +1,9 @@
 Code.require_file "../../support/http_client.exs", __DIR__
 
 defmodule Phoenix.Integration.EndpointTest do
+  # Cannot run async because of serve endpoints
   use ExUnit.Case
+  import ExUnit.CaptureLog
 
   alias Phoenix.Integration.AdapterTest.ProdEndpoint
   alias Phoenix.Integration.AdapterTest.DevEndpoint
@@ -10,20 +12,6 @@ defmodule Phoenix.Integration.EndpointTest do
       http: [port: "4807"], url: [host: "example.com"], server: true)
   Application.put_env(:endpoint_int, DevEndpoint,
       http: [port: "4808"], debug_errors: true)
-
-  defp capture_log(fun) do
-    RouterHelper.capture_log(fn ->
-      fun.()
-
-      # Let's monitor the connection process.
-      # When it is DOWN, we are sure the error
-      # message has been logged. Otherwise the
-      # build can fail due to race conditions.
-      pid = Application.get_env(:phoenix, :integration_endpoint_pid)
-      ref = Process.monitor(pid)
-      assert_receive {:DOWN, ^ref, _, _, _}
-    end)
-  end
 
   defmodule Router do
     @moduledoc """
@@ -66,9 +54,6 @@ defmodule Phoenix.Integration.EndpointTest do
         def call(conn, opts) do
           # Assert we never have a lingering sent message in the inbox
           refute_received {:plug_conn, :sent}
-
-          # We store the current process so we can syncronize the log message
-          Application.put_env(:phoenix, :integration_endpoint_pid, self())
 
           try do
             super(conn, opts)
@@ -135,7 +120,7 @@ defmodule Phoenix.Integration.EndpointTest do
       assert resp.body == "500.html from Phoenix.ErrorView"
     end) =~ "** (RuntimeError) oops"
 
-    shutdown(ProdEndpoint)
+    Supervisor.stop(ProdEndpoint)
     {:error, _reason} = HTTPClient.request(:get, "http://127.0.0.1:#{@prod}", %{})
   end
 
@@ -143,7 +128,7 @@ defmodule Phoenix.Integration.EndpointTest do
     # Has server: false
     {:ok, _} = DevEndpoint.start_link
     {:error, _reason} = HTTPClient.request(:get, "http://127.0.0.1:#{@dev}", %{})
-    shutdown(DevEndpoint)
+    Supervisor.stop(DevEndpoint)
 
     # Toggle globally
     serve_endpoints(true)
@@ -155,9 +140,11 @@ defmodule Phoenix.Integration.EndpointTest do
     assert resp.status == 200
     assert resp.body == "ok"
 
-    {:ok, resp} = HTTPClient.request(:get, "http://127.0.0.1:#{@dev}/unknown", %{})
-    assert resp.status == 404
-    assert resp.body =~ "NoRouteError at GET /unknown"
+    capture_log(fn ->
+      {:ok, resp} = HTTPClient.request(:get, "http://127.0.0.1:#{@dev}/unknown", %{})
+      assert resp.status == 404
+      assert resp.body =~ "NoRouteError at GET /unknown"
+    end)
 
     assert capture_log(fn ->
       {:ok, resp} = HTTPClient.request(:get, "http://127.0.0.1:#{@dev}/oops", %{})
@@ -174,13 +161,5 @@ defmodule Phoenix.Integration.EndpointTest do
 
   defp serve_endpoints(bool) do
     Application.put_env(:phoenix, :serve_endpoints, bool)
-  end
-
-  defp shutdown(endpoint) do
-    pid = Process.whereis(endpoint)
-    ref = Process.monitor(pid)
-    Process.unlink(pid)
-    Process.exit(pid, :shutdown)
-    receive do: ({:DOWN, ^ref, _, _, _} -> :ok)
   end
 end

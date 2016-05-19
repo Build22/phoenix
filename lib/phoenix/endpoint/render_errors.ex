@@ -20,7 +20,7 @@ defmodule Phoenix.Endpoint.RenderErrors do
   defmacro __using__(opts) do
     quote do
       @before_compile Phoenix.Endpoint.RenderErrors
-      @phoenix_handle_errors unquote(opts)
+      @phoenix_render_errors unquote(opts)
     end
   end
 
@@ -34,7 +34,7 @@ defmodule Phoenix.Endpoint.RenderErrors do
           super(conn, opts)
         catch
           kind, reason ->
-            Phoenix.Endpoint.RenderErrors.__catch__(conn, kind, reason, @phoenix_handle_errors)
+            Phoenix.Endpoint.RenderErrors.__catch__(conn, kind, reason, @phoenix_render_errors)
         end
       end
     end
@@ -64,23 +64,18 @@ defmodule Phoenix.Endpoint.RenderErrors do
   # Made public with @doc false for testing.
   @doc false
   def render(conn, kind, reason, stack, opts) do
-    conn = fetch_query_params(conn)
+    conn = conn |> fetch_query_params() |> fetch_format(opts)
 
-    case fetch_format(conn, opts) do
-      %{halted: true} = conn ->
-        conn
-      conn ->
-        reason = Exception.normalize(kind, reason, stack)
-        format = get_format(conn)
-        status = status(kind, reason)
-        format = "#{status}.#{format}"
+    reason = Exception.normalize(kind, reason, stack)
+    format = get_format(conn)
+    status = status(kind, reason)
+    format = "#{status}.#{format}"
 
-        conn
-        |> put_layout(false)
-        |> put_view(opts[:view])
-        |> put_status(status)
-        |> render(format, %{kind: kind, reason: reason, stack: stack})
-    end
+    conn
+    |> put_layout(opts[:layout] || false)
+    |> put_view(opts[:view])
+    |> put_status(status)
+    |> render(format, %{kind: kind, reason: reason, stack: stack})
   end
 
   defp maybe_render(conn, kind, reason, stack, opts) do
@@ -95,9 +90,14 @@ defmodule Phoenix.Endpoint.RenderErrors do
   end
 
   defp fetch_format(conn, opts) do
-    case get_format(conn) do
-      format when is_binary(format) -> conn
-      _ -> conn |> fetch_query_params |> accepts(Keyword.fetch!(opts, :accepts))
+    try do
+      case get_format(conn) do
+        format when is_binary(format) -> conn
+        _ -> conn |> accepts(Keyword.fetch!(opts, :accepts))
+      end
+    rescue
+      Phoenix.NotAcceptableError ->
+        put_format(conn, Keyword.fetch!(opts, :accepts) |> List.first())
     end
   end
 

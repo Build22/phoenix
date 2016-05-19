@@ -13,7 +13,7 @@ defmodule Mix.Tasks.Phoenix.Gen.Model do
 
   The generated model will contain:
 
-    * a model in web/models
+    * a schema file in web/models
     * a migration file for the repository
 
   The generated migration can be skipped with `--no-migration`.
@@ -21,7 +21,7 @@ defmodule Mix.Tasks.Phoenix.Gen.Model do
   ## Attributes
 
   The resource fields are given using `name:type` syntax
-  where type are the types supported by Ecto. Ommitting
+  where type are the types supported by Ecto. Omitting
   the type makes it default to `:string`:
 
       mix phoenix.gen.model User users name age:integer
@@ -33,7 +33,7 @@ defmodule Mix.Tasks.Phoenix.Gen.Model do
 
   This will result in a migration with an `:integer` column
   of `:user_id` and create an index. It will also generate
-  the appropriate `belongs_to` entry in the model's schema.
+  the appropriate `belongs_to` entry in the schema.
 
   Furthermore an array type can also be given if it is
   supported by your database, although it requires the
@@ -56,25 +56,31 @@ defmodule Mix.Tasks.Phoenix.Gen.Model do
 
   ## binary_id
 
-  Generated migration can use `binary_id` for model's primary key and it's
-  references with option `--binary-id`.
+  Generated migration can use `binary_id` for schema's primary key
+  and its references with option `--binary-id`.
 
-  This option assumes the project was generated with the `--binary-id` option,
-  that sets up models to use `binary_id` by default. If that's not the case
-  you can still set all your models to use `binary_id` by default, by adding
-  following to your `model` function in `web/web.ex`option or by adding
-  following to the generated model before the `schema` declaration:
+  This option assumes the project was generated with the `--binary-id`
+  option, that sets up models to use `binary_id` by default. If that's
+  not the case you can still set all your models to use `binary_id`
+  by default, by adding the following to your `model` function in
+  `web/web.ex` or before the `schema` declaration:
 
       @primary_key {:id, :binary_id, autogenerate: true}
       @foreign_key_type :binary_id
 
   ## Default options
 
-  This generator uses default options provided in the `:generators` configuration
-  of the `:phoenix` application. You can override those options providing
-  corresponding switches, e.g. `--no-binary-id` to use normal ids despite
-  the default configuration or `--migration` to force generation of the migration.
+  This generator uses default options provided in the `:generators`
+  configuration of the `:phoenix` application. These are the defaults:
 
+      config :phoenix, :generators,
+        migration: true,
+        binary_id: false,
+        sample_binary_id: "11111111-1111-1111-1111-111111111111"
+
+  You can override those options per invocation by providing corresponding
+  switches, e.g. `--no-binary-id` to use normal ids despite the default
+  configuration or `--migration` to force generation of the migration.
   """
   def run(args) do
     switches = [migration: :boolean, binary_id: :boolean, instructions: :string]
@@ -90,7 +96,6 @@ defmodule Mix.Tasks.Phoenix.Gen.Model do
     binding   = Mix.Phoenix.inflect(singular)
     params    = Mix.Phoenix.params(attrs)
     path      = binding[:path]
-    migration = String.replace(path, "/", "_")
 
     Mix.Phoenix.check_module_name_availability!(binding[:module])
     {assocs, attrs} = partition_attrs_and_assocs(attrs)
@@ -98,18 +103,13 @@ defmodule Mix.Tasks.Phoenix.Gen.Model do
     binding = binding ++
               [attrs: attrs, plural: plural, types: types(attrs), uniques: uniques,
                assocs: assocs(assocs), indexes: indexes(plural, assocs, uniques),
-               defaults: defaults(attrs), params: params,
-               binary_id: opts[:binary_id]]
+               schema_defaults: schema_defaults(attrs), binary_id: opts[:binary_id],
+               migration_defaults: migration_defaults(attrs), params: params]
 
     files = [
       {:eex, "model.ex",       "web/models/#{path}.ex"},
       {:eex, "model_test.exs", "test/models/#{path}_test.exs"},
-    ]
-
-    if opts[:migration] != false do
-      files =
-        [{:eex, "migration.exs", "priv/repo/migrations/#{timestamp()}_create_#{migration}.exs"}|files]
-    end
+    ] ++ migration(opts[:migration], path)
 
     Mix.Phoenix.copy_from paths(), "priv/templates/phoenix.gen.model", "", binding, files
 
@@ -130,7 +130,7 @@ defmodule Mix.Tasks.Phoenix.Gen.Model do
       String.contains?(plural, ":") ->
         raise_with_help
       plural != Phoenix.Naming.underscore(plural) ->
-        Mix.raise "expected the second argument, #{inspect plural}, to be all lowercase using snake_case convention"
+        Mix.raise "Expected the second argument, #{inspect plural}, to be all lowercase using snake_case convention"
       true ->
         args
     end
@@ -183,6 +183,12 @@ defmodule Mix.Tasks.Phoenix.Gen.Model do
       end))
   end
 
+  defp migration(false, _path), do: []
+  defp migration(_, path) do
+    [{:eex, "migration.exs",
+      "priv/repo/migrations/#{timestamp()}_create_#{String.replace(path, "/", "_")}.exs"}]
+  end
+
   defp timestamp do
     {{y, m, d}, {hh, mm, ss}} = :calendar.universal_time()
     "#{y}#{pad(m)}#{pad(d)}#{pad(hh)}#{pad(mm)}#{pad(ss)}"
@@ -198,9 +204,16 @@ defmodule Mix.Tasks.Phoenix.Gen.Model do
     end
   end
 
-  defp defaults(attrs) do
+  defp schema_defaults(attrs) do
     Enum.into attrs, %{}, fn
       {k, :boolean}  -> {k, ", default: false"}
+      {k, _}         -> {k, ""}
+    end
+  end
+
+  defp migration_defaults(attrs) do
+    Enum.into attrs, %{}, fn
+      {k, :boolean}  -> {k, ", default: false, null: false"}
       {k, _}         -> {k, ""}
     end
   end

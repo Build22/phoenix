@@ -21,9 +21,9 @@ defmodule <%= module %>ControllerTest do
       "<%= k %>" => <%= singular %>.<%= k %><% end %>}
   end
 
-  test "does not show resource and instead throw error when id is nonexistent", %{conn: conn} do
+  test "renders page not found when id is nonexistent", %{conn: conn} do
     assert_error_sent 404, fn ->
-      get conn, <%= singular %>_path(conn, :show, -1)
+      get conn, <%= singular %>_path(conn, :show, <%= inspect sample_id %>)
     end
   end
 

@@ -35,7 +35,7 @@ defmodule Phoenix.Router.Route do
   def build(kind, verb, path, host, plug, opts, helper, pipe_through, private, assigns)
       when is_atom(verb) and (is_binary(host) or is_nil(host)) and
            is_atom(plug) and (is_binary(helper) or is_nil(helper)) and
-           is_list(pipe_through) and is_map(private and is_map(assigns))
+           is_list(pipe_through) and is_map(private) and is_map(assigns)
            and kind in [:match, :forward] do
 
     %Route{kind: kind, verb: verb, path: path, host: host, private: private,
@@ -109,17 +109,14 @@ defmodule Phoenix.Router.Route do
 
   defp build_pipes(%Route{kind: :forward} = route) do
     {_params, fwd_segments} = Plug.Router.Utils.build_path_match(route.path)
+    opts = route.opts |> route.plug.init() |> Macro.escape()
 
     quote do
       var!(conn)
       |> Plug.Conn.put_private(:phoenix_pipelines, unquote(route.pipe_through))
       |> Plug.Conn.put_private(:phoenix_route, fn conn ->
-        # We need to store this in a variable so the compiler
-        # does not see a call and then suddenly start tracking
-        # changes in the controller.
-        plug = unquote(route.plug)
-        opts = plug.init(unquote(route.opts))
-        Phoenix.Router.Route.forward(conn, unquote(fwd_segments), plug, opts)
+        Phoenix.Router.Route.forward(conn, unquote(fwd_segments),
+                                     unquote(route.plug), unquote(opts))
       end)
     end |> pipe_through(route)
   end

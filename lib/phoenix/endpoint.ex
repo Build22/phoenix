@@ -39,7 +39,7 @@ defmodule Phoenix.Endpoint do
 
       supervisor(YourApp.Endpoint, [])
 
-  ## Endpoint configuration
+  ### Endpoint configuration
 
   All endpoints are configured in your application environment.
   For example:
@@ -73,11 +73,11 @@ defmodule Phoenix.Endpoint do
       with a 500 error during a HTML request, `render("500.html", assigns)`
       will be called in the view given to `:render_errors`. Defaults to:
 
-          [view: MyApp.ErrorView, accepts: ~w(html)]
+          [view: MyApp.ErrorView, accepts: ~w(html), layout: false]
 
       The default format is used when none is set in the connection.
 
-    * `:instrumenters` - a list of instrumenters modules whose callbacks will
+    * `:instrumenters` - a list of instrumenter modules whose callbacks will
       be fired on instrumentation events. Read more on instrumentation in the
       "Instrumentation" section below.
 
@@ -93,16 +93,19 @@ defmodule Phoenix.Endpoint do
       by `mix phoenix.digest`.
 
     * `:check_origin` - configure transports to check origins or not. May
-      be false, true or a list of hosts that are allowed.
+      be false, true or a list of hosts that are allowed. Hosts also support
+      wildcards. For example:
+
+          check_origin: ["//phoenixframework.org", "//*.example.com"]
 
     * `:http` - the configuration for the HTTP server. Currently uses
       cowboy and accepts all options as defined by
-      [`Plug.Adapters.Cowboy`](http://hexdocs.pm/plug/Plug.Adapters.Cowboy.html).
+      [`Plug.Adapters.Cowboy`](https://hexdocs.pm/plug/Plug.Adapters.Cowboy.html).
       Defaults to `false`.
 
     * `:https` - the configuration for the HTTPS server. Currently uses
       cowboy and accepts all options as defined by
-      [`Plug.Adapters.Cowboy`](http://hexdocs.pm/plug/Plug.Adapters.Cowboy.html).
+      [`Plug.Adapters.Cowboy`](https://hexdocs.pm/plug/Plug.Adapters.Cowboy.html).
       Defaults to `false`.
 
     * `:force_ssl` - ensures no data is ever sent via http, always redirecting
@@ -130,6 +133,10 @@ defmodule Phoenix.Endpoint do
       as a workaround for releases where environment specific information
       is loaded only at compile-time.
 
+      The `:host` option requires a string or {:system, "ENV_VAR"}`. Similar
+      to `:port`, when given a tuple like `{:system, "HOST"}`, the host
+      will be referenced from `System.get_env("HOST")` at runtime.
+
     * `:static_url` - configuration for generating URLs for static files.
       It will fallback to `url` if no option is provided. Accepts the same
       options as `url`.
@@ -144,13 +151,19 @@ defmodule Phoenix.Endpoint do
           [node: ["node_modules/brunch/bin/brunch", "watch"]]
 
     * `:live_reload` - configuration for the live reload option.
-      Configuration requires a `:paths` option which should be a list of
-      files to watch. When these files change, it will trigger a reload.
+      Configuration requires a `:patterns` option which should be a list of
+      file patterns to watch. When these files change, it will trigger a reload.
       If you are using a tool like [pow](http://pow.cx) in development,
       you may need to set the `:url` option appropriately.
 
-          [url: "ws://localhost:4000",
-           paths: [Path.expand("priv/static/js/phoenix.js")]]
+          live_reload: [
+            url: "ws://localhost:4000",
+            patterns: [
+              ~r{priv/static/.*(js|css|png|jpeg|jpg|gif)$},
+              ~r{web/views/.*(ex)$},
+              ~r{web/templates/.*(eex)$}
+            ]
+          ]
 
     * `:pubsub` - configuration for this endpoint's pubsub adapter.
       Configuration either requires a `:name` of the registered pubsub
@@ -161,7 +174,7 @@ defmodule Phoenix.Endpoint do
 
           [adapter: Phoenix.PubSub.PG2, name: MyApp.PubSub]
 
-      It also supports custom adpater configuration:
+      It also supports custom adapter configuration:
 
           [name: :my_pubsub, adapter: Phoenix.PubSub.Redis,
            host: "192.168.100.1"]
@@ -174,21 +187,18 @@ defmodule Phoenix.Endpoint do
 
   #### Paths and URLs
 
-    * `url()` - generates the endpoint base URL without any path information
-    * `static_url()` - generates the static URL without any path information
-
     * `struct_url()` - generates the endpoint base URL but as a `URI` struct
-
-    * `path(path)` - generates the path information when routing to this
-      endpoint
+    * `url()` - generates the endpoint base URL without any path information
+    * `path(path)` - generates the path information when routing to this endpoint
+    * `static_url()` - generates the static URL without any path information
     * `static_path(path)` - generates a route to a static file in `priv/static`
 
   #### Channels
 
-    * `subscribe(pid, topic, opts)` - subscribes the pid to the given topic.
-      See `Phoenix.PubSub.subscribe/4` for options.
+    * `subscribe(topic, opts)` - subscribes the caller to the given topic.
+      See `Phoenix.PubSub.subscribe/3` for options.
 
-    * `unsubscribe(pid, topic)` - unsubscribes the pid from the given topic.
+    * `unsubscribe(topic)` - unsubscribes the caller from the given topic.
 
     * `broadcast(topic, event, msg)` - broadcasts a `msg` with as `event`
       in the given `topic`.
@@ -300,22 +310,11 @@ defmodule Phoenix.Endpoint do
   where:
 
     * `time_diff` is an integer representing the time it took to execute the
-      instrumented function **in microseconds**.
+      instrumented function **in native units**.
+
     * `result_of_before_callback` is the return value of the "before" clause of
       the same `event_callback`. This is a means of passing data from the
-      "before" clause to the "after" clause when instrumenting. For example, an
-      instrumenter can implement custom time measuring with this:
-
-          defmodule MyInstrumenter do
-            def event_callback(:start, _compile, _runtime) do
-              :erlang.monotonic_time(:micro_seconds)
-            end
-
-            def event_callback(:stop, _time_diff, start_time) do
-              stop_time = :erlang.monotonic_time(:micro_seconds)
-              do_something_with_diff(stop_time - start_time)
-            end
-          end
+      "before" clause to the "after" clause when instrumenting.
 
   The return value of each "before" event callback will be stored and passed to
   the corresponding "after" callback.
@@ -337,12 +336,14 @@ defmodule Phoenix.Endpoint do
 
   By default, Phoenix instruments the following events:
 
-    * `:phoenix_controller_call` - it's the whole controller pipeline. No
-      runtime metadata is passed to the instrumentation here.
+    * `:phoenix_controller_call` - it's the whole controller pipeline.
+      The `%Plug.Conn{}` is passed as runtime metadata.
     * `:phoenix_controller_render` - the rendering of a view from a
       controller. The map of runtime metadata passed to instrumentation
       callbacks has the `:template` key - for the name of the template, e.g.,
       `"index.html"` - and the `:format` key - for the format of the template.
+    * `:phoenix_channel_join` - the joining of a channel. The `%Phoenix.Socket{}`
+      and join params are passed as runtime metadata via `:socket` and `:params`.
 
   ### Dynamic instrumentation
 
@@ -387,12 +388,26 @@ defmodule Phoenix.Endpoint do
 
       def __pubsub_server__, do: @pubsub_server
 
-      def subscribe(pid, topic, opts \\ []) do
+      # TODO remove pid version on next major release
+      def subscribe(pid, topic) when is_pid(pid) and is_binary(topic) do
+        Phoenix.PubSub.subscribe(@pubsub_server, pid, topic, [])
+      end
+      def subscribe(pid, topic, opts) when is_pid(pid) and is_binary(topic) and is_list(opts) do
         Phoenix.PubSub.subscribe(@pubsub_server, pid, topic, opts)
       end
+      def subscribe(topic) when is_binary(topic) do
+        Phoenix.PubSub.subscribe(@pubsub_server, topic, [])
+      end
+      def subscribe(topic, opts) when is_binary(topic) and is_list(opts) do
+        Phoenix.PubSub.subscribe(@pubsub_server, topic, opts)
+      end
 
+      # TODO remove pid version on next major release
+      def unsubscribe(topic) do
+        Phoenix.PubSub.unsubscribe(@pubsub_server, topic)
+      end
       def unsubscribe(pid, topic) do
-        Phoenix.PubSub.unsubscribe(@pubsub_server, pid, topic)
+        Phoenix.PubSub.unsubscribe(@pubsub_server, topic)
       end
 
       def broadcast_from(from, topic, event, msg) do
@@ -420,32 +435,28 @@ defmodule Phoenix.Endpoint do
 
       Module.register_attribute(__MODULE__, :plugs, accumulate: true)
       Module.register_attribute(__MODULE__, :phoenix_sockets, accumulate: true)
-      @before_compile Phoenix.Endpoint
+
+      if force_ssl = Phoenix.Endpoint.__force_ssl__(__MODULE__, var!(config)) do
+        plug Plug.SSL, force_ssl
+      end
 
       def init(opts) do
         opts
       end
 
       def call(conn, _opts) do
-        conn = put_in conn.secret_key_base, config(:secret_key_base)
-        conn
-        |> Plug.Conn.put_private(:phoenix_endpoint, __MODULE__)
-        |> put_script_name()
-        |> phoenix_pipeline()
-      end
-
-      defoverridable [init: 1, call: 2]
-
-      if force_ssl = var!(config)[:force_ssl] do
-        plug Plug.SSL,
-          Keyword.put_new(force_ssl, :host, var!(config)[:url][:host] || "localhost")
+        phoenix_pipeline(conn)
       end
 
       if var!(config)[:debug_errors] do
         use Plug.Debugger, otp_app: @otp_app
       end
 
-      use Phoenix.Endpoint.RenderErrors, var!(config)[:render_errors]
+      # Compile after the debugger so we properly wrap it.
+      @before_compile Phoenix.Endpoint
+      @phoenix_render_errors var!(config)[:render_errors]
+
+      defoverridable [init: 1, call: 2]
     end
   end
 
@@ -551,6 +562,24 @@ defmodule Phoenix.Endpoint do
   end
 
   @doc false
+  def __force_ssl__(module, config) do
+    if force_ssl = config[:force_ssl] do
+      force_ssl = Keyword.put_new(force_ssl, :host, var!(config)[:url][:host] || "localhost")
+
+      if force_ssl[:host] == "localhost" do
+        IO.puts :stderr, """
+        warning: you have enabled :force_ssl but your host is currently set to localhost.
+        Please configure your endpoint url host properly:
+
+            config #{inspect module}, url: [host: "YOURHOST.com"]
+        """
+      end
+
+      force_ssl
+    end
+  end
+
+  @doc false
   defmacro __before_compile__(env) do
     sockets = Module.get_attribute(env.module, :phoenix_sockets)
     plugs = Module.get_attribute(env.module, :plugs)
@@ -559,6 +588,24 @@ defmodule Phoenix.Endpoint do
     instrumentation = Phoenix.Endpoint.Instrument.definstrument(otp_app, env.module)
 
     quote do
+      defoverridable [call: 2]
+
+      # Inline render errors so we set the endpoint before calling it.
+      def call(conn, opts) do
+        conn = put_in conn.secret_key_base, config(:secret_key_base)
+        conn =
+          conn
+          |> Plug.Conn.put_private(:phoenix_endpoint, __MODULE__)
+          |> put_script_name()
+
+        try do
+          super(conn, opts)
+        catch
+          kind, reason ->
+            Phoenix.Endpoint.RenderErrors.__catch__(conn, kind, reason, @phoenix_render_errors)
+        end
+      end
+
       defp phoenix_pipeline(unquote(conn)), do: unquote(body)
 
       @doc """

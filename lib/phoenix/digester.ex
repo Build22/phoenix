@@ -6,7 +6,7 @@ defmodule Phoenix.Digester do
 
   For each file under the given input path, Phoenix will generate a digest
   and also compress in `.gz` format. The filename and its digest will be
-  used to generate the manifest file. It also avoid duplications checking
+  used to generate the manifest file. It also avoids duplications checking
   for already digested files.
 
   For stylesheet files found under the given path, Phoenix will replace
@@ -42,7 +42,7 @@ defmodule Phoenix.Digester do
     input_path
     |> Path.join("**")
     |> Path.wildcard
-    |> Enum.filter(&(!File.dir?(&1) && !compiled_file?(&1)))
+    |> Enum.filter(&not(File.dir?(&1) or compiled_file?(&1)))
     |> Enum.map(&(map_file(&1, input_path)))
   end
 
@@ -112,7 +112,7 @@ defmodule Phoenix.Digester do
     end
   end
 
-  @stylesheet_url_regex ~r{(url\(\s*)(\S+)(\s*\))}
+  @stylesheet_url_regex ~r{(url\(\s*)(\S+?)(\s*\))}
   @quoted_text_regex ~r{\A(['"])(.+)\1\z}
 
   defp digest_asset_references(file, manifest) do
@@ -127,7 +127,10 @@ defmodule Phoenix.Digester do
   end
 
   defp digested_url("/" <> relative_path, _file, manifest) do
-    "/" <> Map.get(manifest, relative_path, relative_path)
+    case Map.fetch(manifest, relative_path) do
+      {:ok, digested_path} -> "/" <> digested_path <> "?vsn=d"
+      :error -> "/" <> relative_path
+    end
   end
 
   defp digested_url(url, file, manifest) do
@@ -144,6 +147,7 @@ defmodule Phoenix.Digester do
             url
             |> Path.dirname()
             |> Path.join(Path.basename(digested_path))
+            |> Kernel.<>("?vsn=d")
           :error -> url
         end
       _ -> url

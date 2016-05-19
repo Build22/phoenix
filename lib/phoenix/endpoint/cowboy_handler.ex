@@ -59,6 +59,10 @@ defmodule Phoenix.Endpoint.CowboyHandler do
   Generates a childspec to be used in the supervision tree.
   """
   def child_spec(scheme, endpoint, config) do
+    if scheme == :https do
+      Application.ensure_all_started(:ssl)
+    end
+
     dispatches =
       for {path, socket} <- endpoint.__sockets__,
           {transport, {module, config}} <- socket.__transports__,
@@ -108,6 +112,6 @@ defmodule Phoenix.Endpoint.CowboyHandler do
 
   defp info(scheme, endpoint, ref) do
     port = :ranch.get_port(ref)
-    "Running #{inspect endpoint} with Cowboy using #{scheme} on port #{port}"
+    "Running #{inspect endpoint} with Cowboy using #{scheme}://localhost:#{port}"
   end
 end

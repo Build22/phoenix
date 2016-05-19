@@ -65,10 +65,26 @@ defmodule Phoenix.Socket.Transport do
   ## Managing channels
 
   Because channels are spawned from the transport process, transports
-  must trap exists and correctly handle the `{:EXIT, _, _}` messages
+  must trap exits and correctly handle the `{:EXIT, _, _}` messages
   arriving from channels, relaying the proper response to the client.
 
-  The function `on_exit_message/2` should aid with that.
+  The following events are sent by the transport when a channel exits:
+
+    * `"phx_close"` - The channel has exited gracefully
+    * `"phx_error"` - The channel has crashed
+
+  The `on_exit_message/3` function aids in constructing these messages.
+
+  ## Duplicate Join Subscriptions
+
+  For a given topic, the client may only establish a single channel
+  subscription. When attempting to create a duplicate subscription,
+  `dispatch/3` will close the existing channel, log a warning, and
+  spawn a new channel for the topic. When sending the `"phx_close"`
+  event form the closed channel, the message will contain the `ref` the
+  client sent when joining. This allows the client to uniquely identify
+  `"phx_close"` and `"phx_error"` messages when force-closing a channel
+  on duplicate joins.
 
   ## Security
 
@@ -101,7 +117,6 @@ defmodule Phoenix.Socket.Transport do
   implementation.
   """
 
-  use Behaviour
   require Logger
   alias Phoenix.Socket
   alias Phoenix.Socket.Message
@@ -113,7 +128,7 @@ defmodule Phoenix.Socket.Transport do
   @doc """
   Provides a keyword list of default configuration for socket transports.
   """
-  defcallback default_config() :: Keyword.t
+  @callback default_config() :: Keyword.t
 
   @doc """
   Returns the Channel Transport protocol version.
@@ -185,6 +200,20 @@ defmodule Phoenix.Socket.Transport do
     * `{:error, reason, reply}` - An error happened and the reply
       must be sent as result
 
+  ## Parameters filtering on join
+
+  When logging parameters, Phoenix can filter out sensitive parameters
+  in the logs, such as passwords, tokens and what not. Parameters to
+  be filtered can be added via the `:filter_parameters` option:
+
+      config :phoenix, :filter_parameters, ["password", "secret"]
+
+  With the configuration above, Phoenix will filter any parameter
+  that contains the terms `password` or `secret`. The match is
+  case sensitive.
+
+  Phoenix's default is `["password"]`.
+
   """
   def dispatch(msg, channels, socket)
 
@@ -194,19 +223,13 @@ defmodule Phoenix.Socket.Transport do
 
   def dispatch(%Message{} = msg, channels, socket) do
     channels
-    |> HashDict.get(msg.topic)
+    |> Map.get(msg.topic)
     |> do_dispatch(msg, socket)
   end
 
   defp do_dispatch(nil, %{event: "phx_join", topic: topic} = msg, socket) do
     if channel = socket.handler.__channel__(topic, socket.transport_name) do
       socket = %Socket{socket | topic: topic, channel: channel}
-
-      log_info topic, fn ->
-        "JOIN #{topic} to #{inspect(channel)}\n" <>
-        "  Transport:  #{inspect socket.transport}\n" <>
-        "  Parameters: #{inspect msg.payload}"
-      end
 
       case Phoenix.Channel.Server.join(socket, msg.payload) do
         {:ok, response, pid} ->
@@ -222,6 +245,13 @@ defmodule Phoenix.Socket.Transport do
     end
   end
 
+  defp do_dispatch(pid, %{event: "phx_join"} = msg, socket) when is_pid(pid) do
+    Logger.debug "Duplicate channel join for topic \"#{msg.topic}\" in #{inspect(socket.handler)}. " <>
+                 "Closing existing channel for new join."
+    :ok = Phoenix.Channel.Server.close(pid)
+    do_dispatch(nil, msg, socket)
+  end
+
   defp do_dispatch(nil, msg, socket) do
     reply_ignore(msg, socket)
   end
@@ -235,7 +265,7 @@ defmodule Phoenix.Socket.Transport do
   defp log_info(_topic, func), do: Logger.info(func)
 
   defp reply_ignore(msg, socket) do
-    Logger.debug fn -> "Ignoring unmatched topic \"#{msg.topic}\" in #{inspect(socket.handler)}" end
+    Logger.warn fn -> "Ignoring unmatched topic \"#{msg.topic}\" in #{inspect(socket.handler)}" end
     {:error, :unmatched_topic, %Reply{ref: msg.ref, topic: msg.topic, status: :error,
                                       payload: %{reason: "unmatched topic"}}}
   end
@@ -243,12 +273,17 @@ defmodule Phoenix.Socket.Transport do
   @doc """
   Returns the message to be relayed when a channel exists.
   """
+  # TODO remove 2-arity on next major release
   def on_exit_message(topic, reason) do
+    IO.write :stderr, "Phoenix.Transport.on_exit_message/2 is deprecated. Use on_exit_message/3 instead."
+    on_exit_message(topic, nil, reason)
+  end
+  def on_exit_message(topic, join_ref, reason) do
     case reason do
-      :normal        -> %Message{topic: topic, event: "phx_close", payload: %{}}
-      :shutdown      -> %Message{topic: topic, event: "phx_close", payload: %{}}
-      {:shutdown, _} -> %Message{topic: topic, event: "phx_close", payload: %{}}
-      _              -> %Message{topic: topic, event: "phx_error", payload: %{}}
+      :normal        -> %Message{ref: join_ref, topic: topic, event: "phx_close", payload: %{}}
+      :shutdown      -> %Message{ref: join_ref, topic: topic, event: "phx_close", payload: %{}}
+      {:shutdown, _} -> %Message{ref: join_ref, topic: topic, event: "phx_close", payload: %{}}
+      _              -> %Message{ref: join_ref, topic: topic, event: "phx_error", payload: %{}}
     end
   end
 

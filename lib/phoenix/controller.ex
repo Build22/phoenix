@@ -122,9 +122,8 @@ defmodule Phoenix.Controller do
       import Plug.Conn
       import Phoenix.Controller
 
-      use Phoenix.Controller.Pipeline
+      use Phoenix.Controller.Pipeline, opts
 
-      plug Phoenix.Controller.Logger, opts
       plug :put_new_layout, {Phoenix.Controller.__layout__(__MODULE__, opts), :app}
       plug :put_new_view, Phoenix.Controller.__view__(__MODULE__)
     end
@@ -309,9 +308,9 @@ defmodule Phoenix.Controller do
     cond do
       to = opts[:to] ->
         case to do
-          "//" <> _ -> raise_invalid_url()
+          "//" <> _ -> raise_invalid_url(to)
           "/" <> _  -> to
-          _         -> raise_invalid_url()
+          _         -> raise_invalid_url(to)
         end
       external = opts[:external] ->
         external
@@ -319,8 +318,8 @@ defmodule Phoenix.Controller do
         raise ArgumentError, "expected :to or :external option in redirect/2"
     end
   end
-  defp raise_invalid_url do
-    raise ArgumentError, "the :to option in redirect expects a path"
+  defp raise_invalid_url(url) do
+    raise ArgumentError, "the :to option in redirect expects a path but was #{inspect url}"
   end
 
   @doc """
@@ -382,32 +381,30 @@ defmodule Phoenix.Controller do
       iex> layout(conn)
       {AppView, "print.html"}
 
-      iex> conn = put_layout :print
+      iex> conn = put_layout conn, :print
       iex> layout(conn)
       {AppView, :print}
 
   Raises `Plug.Conn.AlreadySentError` if the conn was already sent.
   """
-  @spec put_layout(Plug.Conn.t, {atom, binary} | binary | false) :: Plug.Conn.t
+  @spec put_layout(Plug.Conn.t, {atom, binary | atom} | binary | false) :: Plug.Conn.t
   def put_layout(%Plug.Conn{state: state} = conn, layout) do
     if state in @unsent do
-      _put_layout(conn, layout)
+      do_put_layout(conn, layout)
     else
       raise Plug.Conn.AlreadySentError
     end
   end
 
-  def _put_layout(conn, layout)
-
-  def _put_layout(conn, false) do
+  defp do_put_layout(conn, false) do
     put_private(conn, :phoenix_layout, false)
   end
 
-  def _put_layout(conn, {mod, layout}) when is_atom(mod) do
+  defp do_put_layout(conn, {mod, layout}) when is_atom(mod) do
     put_private(conn, :phoenix_layout, {mod, layout})
   end
 
-  def _put_layout(conn, layout) when is_binary(layout) or is_atom(layout) do
+  defp do_put_layout(conn, layout) when is_binary(layout) or is_atom(layout) do
     update_in conn.private, fn private ->
       case Map.get(private, :phoenix_layout, false) do
         {mod, _} -> Map.put(private, :phoenix_layout, {mod, layout})
@@ -587,11 +584,11 @@ defmodule Phoenix.Controller do
   @spec render(Plug.Conn.t, binary | atom, Dict.t) :: Plug.Conn.t
   @spec render(Plug.Conn.t, module, binary | atom) :: Plug.Conn.t
   def render(conn, template, assigns)
-    when is_atom(template) and is_list(assigns) do
+    when is_atom(template) and (is_map(assigns) or is_list(assigns)) do
     format =
       get_format(conn) ||
       raise "cannot render template #{inspect template} because conn.params[\"_format\"] is not set. " <>
-            "Please set `plug :accepts, %w(html json ...)` in your pipeline."
+            "Please set `plug :accepts, ~w(html json ...)` in your pipeline."
     do_render(conn, template_name(template, format), format, assigns)
   end
 
@@ -773,9 +770,18 @@ defmodule Phoenix.Controller do
       * x-xss-protection - set to "1; mode=block" to improve XSS
         protection on both Chrome and IE
 
-  Custom headers may also be given.
+  A custom headers map may also be given to be merged with defaults.
   """
-  def put_secure_browser_headers(conn, _opts \\ []) do
+  def put_secure_browser_headers(conn, headers \\ %{})
+  def put_secure_browser_headers(conn, []) do
+    put_secure_defaults(conn)
+  end
+  def put_secure_browser_headers(conn, headers) when is_map(headers) do
+    conn
+    |> put_secure_defaults()
+    |> merge_resp_headers(headers)
+  end
+  defp put_secure_defaults(conn) do
     merge_resp_headers(conn, [
       {"x-frame-options", "SAMEORIGIN"},
       {"x-xss-protection", "1; mode=block"},
@@ -869,9 +875,9 @@ defmodule Phoenix.Controller do
     if format in accepted do
       put_format(conn, format)
     else
-      Logger.debug "Unknown format #{inspect format} in plug :accepts, " <>
-                   "expected one of #{inspect accepted}"
-      conn |> send_resp(406, "") |> halt()
+      raise Phoenix.NotAcceptableError,
+        message: "unknown format #{inspect format}, expected one of #{inspect accepted}",
+        accepts: accepted
     end
   end
 
@@ -898,7 +904,7 @@ defmodule Phoenix.Controller do
         exts = parse_exts(type <> "/" <> subtype)
         q    = parse_q(args)
 
-        if q === 1.0 && (format = find_format(exts, accepted)) do
+        if format = (q === 1.0 && find_format(exts, accepted)) do
           put_format(conn, format)
         else
           parse_header_accept(conn, t, [{-q, exts}|acc], accepted)
@@ -939,10 +945,10 @@ defmodule Phoenix.Controller do
   defp find_format("*/*", accepted), do: Enum.fetch!(accepted, 0)
   defp find_format(exts, accepted),  do: Enum.find(exts, &(&1 in accepted))
 
-  defp refuse(conn, accepted) do
-    Logger.debug "No supported media type in accept header in plug :accepts, " <>
-                 "expected one of #{inspect accepted}"
-    conn |> send_resp(406, "") |> halt()
+  defp refuse(_conn, accepted) do
+    raise Phoenix.NotAcceptableError,
+      message: "no supported media type in accept header, expected one of #{inspect accepted}",
+      accepts: accepted
   end
 
   @doc """
@@ -998,7 +1004,7 @@ defmodule Phoenix.Controller do
   end
 
   @doc """
-  Returns a message from flash by key
+  Returns a message from flash by key.
 
   ## Examples
 

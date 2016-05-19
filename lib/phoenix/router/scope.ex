@@ -12,13 +12,13 @@ defmodule Phoenix.Router.Scope do
   """
   def init(module) do
     Module.put_attribute(module, @stack, [%Scope{}])
-    Module.put_attribute(module, @pipes, HashSet.new)
+    Module.put_attribute(module, @pipes, MapSet.new)
   end
 
   @doc """
   Builds a route based on the top of the stack.
   """
-  def route(module, kind, verb, path, plug, plug_opts, opts) do
+  def route(module, kind, verb, "/" <> _ = path, plug, plug_opts, opts) do
     private = Keyword.get(opts, :private, %{})
     assigns = Keyword.get(opts, :assigns, %{})
     as      = Keyword.get(opts, :as, Phoenix.Naming.resource_name(plug, "Controller"))
@@ -28,11 +28,19 @@ defmodule Phoenix.Router.Scope do
     Phoenix.Router.Route.build(kind, verb, path, host, alias, plug_opts, as, pipes, private, assigns)
   end
 
+  def route(module, kind, verb, path, plug, plug_opts, opts) do
+    IO.write :stderr, """
+    warning: router paths should begin with a forward slash.
+    #{Exception.format_stacktrace}
+    """
+    route(module, kind, verb, "/" <> path, plug, plug_opts, opts)
+  end
+
   @doc """
   Defines the given pipeline.
   """
   def pipeline(module, pipe) when is_atom(pipe) do
-    update_pipes module, &HashSet.put(&1, pipe)
+    update_pipes module, &MapSet.put(&1, pipe)
   end
 
   @doc """
@@ -55,11 +63,19 @@ defmodule Phoenix.Router.Scope do
   end
 
   def push(module, opts) when is_list(opts) do
-    path  = Keyword.get(opts, :path)
-    if path, do: path = Plug.Router.Utils.split(path)
+    path = Keyword.get(opts, :path)
+
+    if path && String.at(path, 0) != "/" do
+      IO.write :stderr, """
+      warning: router paths should begin with a forward slash.
+      #{Exception.format_stacktrace}
+      """
+    end
+
+    path = path && Plug.Router.Utils.split(path)
 
     alias = Keyword.get(opts, :alias)
-    if alias, do: alias = Atom.to_string(alias)
+    alias = alias && Atom.to_string(alias)
 
     scope = %Scope{path: path,
                    alias: alias,

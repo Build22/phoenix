@@ -10,20 +10,12 @@ defmodule Phoenix.Endpoint.Server do
   end
 
   def init({otp_app, endpoint}) do
-    children = []
     handler  = endpoint.config(:handler)
-
-    if config = endpoint.config(:http) do
-      config   = default(config, otp_app, 4000)
-      children = [handler.child_spec(:http, endpoint, config)|children]
-    end
-
-    if config = endpoint.config(:https) do
-      {:ok, _} = Application.ensure_all_started(:ssl)
-      config   = default(config, otp_app, 4040)
-      children = [handler.child_spec(:https, endpoint, config)|children]
-    end
-
+    children =
+      for {scheme, port} <- [http: 4000, https: 4040],
+          config = endpoint.config(scheme) do
+        handler.child_spec(scheme, endpoint, default(config, otp_app, port))
+      end
     supervise(children, strategy: :one_for_one)
   end
 
@@ -36,11 +28,8 @@ defmodule Phoenix.Endpoint.Server do
     Keyword.put(config, :port, to_port(config[:port]))
   end
 
-  defp to_port(nil) do
-    Logger.error "Server can't start because :port in config is nil, please use a valid port number"
-    exit(:shutdown)
-  end
-  defp to_port(binary)  when is_binary(binary),   do: String.to_integer(binary)
+  defp to_port(nil), do: raise "server can't start because :port in config is nil, please use a valid port number"
+  defp to_port(binary)  when is_binary(binary), do: String.to_integer(binary)
   defp to_port(integer) when is_integer(integer), do: integer
   defp to_port({:system, env_var}), do: to_port(System.get_env(env_var))
 end

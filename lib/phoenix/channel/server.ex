@@ -1,12 +1,10 @@
 defmodule Phoenix.Channel.Server do
   use GenServer
   require Logger
-
+  require Phoenix.Endpoint
   alias Phoenix.PubSub
   alias Phoenix.Socket
-  alias Phoenix.Socket.Broadcast
-  alias Phoenix.Socket.Message
-  alias Phoenix.Socket.Reply
+  alias Phoenix.Socket.{Broadcast, Message, Reply}
 
   @moduledoc false
 
@@ -17,16 +15,19 @@ defmodule Phoenix.Channel.Server do
   """
   @spec join(Socket.t, map) :: {:ok, map, pid} | {:error, map}
   def join(socket, auth_payload) do
-    ref = make_ref()
+    Phoenix.Endpoint.instrument socket, :phoenix_channel_join,
+      %{params: auth_payload, socket: socket}, fn ->
+      ref = make_ref()
 
-    case GenServer.start_link(__MODULE__, {socket, auth_payload, self(), ref}) do
-      {:ok, pid} ->
-        receive do: ({^ref, reply} -> {:ok, reply, pid})
-      :ignore ->
-        receive do: ({^ref, reply} -> {:error, reply})
-      {:error, reason} ->
-        Logger.error fn -> Exception.format_exit(reason) end
-        {:error, %{reason: "join crashed"}}
+      case GenServer.start_link(__MODULE__, {socket, auth_payload, self(), ref}) do
+        {:ok, pid} ->
+          receive do: ({^ref, reply} -> {:ok, reply, pid})
+        :ignore ->
+          receive do: ({^ref, reply} -> {:error, reply})
+        {:error, reason} ->
+          Logger.error fn -> Exception.format_exit(reason) end
+          {:error, %{reason: "join crashed"}}
+      end
     end
   end
 
@@ -192,7 +193,7 @@ defmodule Phoenix.Channel.Server do
   end
 
   defp join(socket, reply, parent, ref) do
-    PubSub.subscribe(socket.pubsub_server, self(), socket.topic,
+    PubSub.subscribe(socket.pubsub_server, socket.topic,
       link: true,
       fastlane: {socket.transport_pid,
                  socket.serializer,
@@ -212,13 +213,6 @@ defmodule Phoenix.Channel.Server do
     handle_result({:stop, {:shutdown, :closed}, socket}, :handle_in)
   end
 
-  @doc false
-  def handle_info(%Message{topic: topic, event: "phx_join"}, %{topic: topic} = socket) do
-    Logger.info fn -> "#{inspect socket.channel} received join event with topic \"#{topic}\" but channel already joined" end
-
-    handle_result({:reply, {:error, %{reason: "already joined"}}, socket}, :handle_in)
-  end
-
   def handle_info(%Message{topic: topic, event: "phx_leave", ref: ref}, %{topic: topic} = socket) do
     handle_result({:stop, {:shutdown, :left}, :ok, put_in(socket.ref, ref)}, :handle_in)
   end
@@ -230,8 +224,7 @@ defmodule Phoenix.Channel.Server do
     |> handle_result(:handle_in)
   end
 
-  def handle_info(%Broadcast{topic: topic, event: event, payload: payload},
-                  %{topic: topic} = socket) do
+  def handle_info(%Broadcast{event: event, payload: payload}, socket) do
     event
     |> socket.channel.handle_out(payload, socket)
     |> handle_result(:handle_out)
@@ -246,6 +239,41 @@ defmodule Phoenix.Channel.Server do
   @doc false
   def terminate(reason, socket) do
     socket.channel.terminate(reason, socket)
+  end
+
+  @doc false
+  def fastlane(subscribers, from, %Broadcast{event: event} = msg) do
+    Enum.reduce(subscribers, %{}, fn
+      {pid, _fastlanes}, cache when pid == from ->
+        cache
+
+      {pid, nil}, cache ->
+        send(pid, msg)
+        cache
+
+      {pid, {fastlane_pid, serializer, event_intercepts}}, cache ->
+        if event in event_intercepts do
+          send(pid, msg)
+          cache
+        else
+          case Map.fetch(cache, serializer) do
+            {:ok, encoded_msg} ->
+              send(fastlane_pid, encoded_msg)
+              cache
+            :error ->
+              encoded_msg = serializer.fastlane!(msg)
+              send(fastlane_pid, encoded_msg)
+              Map.put(cache, serializer, encoded_msg)
+          end
+        end
+    end)
+  end
+
+  def fastlane(subscribers, from, msg) do
+    Enum.each(subscribers, fn
+      {pid, _} when pid == from -> :noop
+      {pid, _} -> send(pid, msg)
+    end)
   end
 
   ## Handle results

@@ -42,6 +42,7 @@ defmodule Phoenix.Endpoint.Adapter do
     pub_conf = conf[:pubsub]
 
     if adapter = pub_conf[:adapter] do
+      pub_conf = [fastlane: Phoenix.Channel.Server] ++ pub_conf
       [supervisor(adapter, [mod.__pubsub_server__(), pub_conf])]
     else
       []
@@ -70,7 +71,7 @@ defmodule Phoenix.Endpoint.Adapter do
 
   defp code_reloader_children(mod, conf) do
     if conf[:code_reloader] do
-      args = [conf[:otp_app], conf[:reloadable_paths], conf[:reloadable_compilers],
+      args = [conf[:otp_app], conf[:reloadable_compilers],
               [name: Module.concat(mod, CodeReloader)]]
       [worker(Phoenix.CodeReloader.Server, args)]
     else
@@ -110,7 +111,7 @@ defmodule Phoenix.Endpoint.Adapter do
      # Compile-time config
      code_reloader: false,
      debug_errors: false,
-     render_errors: [view: render_errors(module), accepts: ~w(html)],
+     render_errors: [view: render_errors(module), accepts: ~w(html), layout: false],
 
      # Runtime config
      cache_static_manifest: nil,
@@ -118,7 +119,6 @@ defmodule Phoenix.Endpoint.Adapter do
      http: false,
      https: false,
      reloadable_compilers: [:gettext, :phoenix, :elixir],
-     reloadable_paths: ["web"],
      secret_key_base: nil,
      static_url: nil,
      url: [host: "localhost", path: "/"],
@@ -197,7 +197,7 @@ defmodule Phoenix.Endpoint.Adapter do
       end
 
     scheme = url[:scheme] || scheme
-    host   = url[:host]
+    host   = host_to_binary(url[:host])
     port   = port_to_integer(url[:port] || port)
 
     %URI{scheme: scheme, port: port, host: host}
@@ -219,6 +219,9 @@ defmodule Phoenix.Endpoint.Adapter do
   def static_path(_endpoint, path) when is_binary(path) do
     raise ArgumentError, "static_path/2 expects a path starting with / as argument"
   end
+
+  defp host_to_binary({:system, env_var}), do: host_to_binary(System.get_env(env_var))
+  defp host_to_binary(host), do: host
 
   defp port_to_integer({:system, env_var}), do: port_to_integer(System.get_env(env_var))
   defp port_to_integer(port) when is_binary(port), do: String.to_integer(port)
@@ -257,7 +260,7 @@ defmodule Phoenix.Endpoint.Adapter do
       else
         Logger.error "Could not find static manifest at #{inspect outer}. " <>
                      "Run \"mix phoenix.digest\" after building your static files " <>
-                     "or remove the configuration from \"config/prod.exs.\""
+                     "or remove the configuration from \"config/prod.exs\"."
       end
     else
       %{}

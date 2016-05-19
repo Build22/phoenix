@@ -18,8 +18,12 @@ defmodule MyApp.User do
   defstruct name: "name"
 end
 
+defmodule MyApp.PathView do
+  use Phoenix.View, root: "test/fixtures/templates", path: ""
+end
+
 defmodule MyApp.UserView do
-  use Phoenix.View, root: "test/fixtures/templates"
+  use Phoenix.View, root: "test/fixtures/templates", pattern: "**/*"
 
   def escaped_title(title) do
     {:safe, Plug.HTML.html_escape(title)}
@@ -47,6 +51,10 @@ defmodule MyApp.UserView do
     """
     View module is #{assigns.view_module} and view template is #{assigns.view_template}
     """
+  end
+
+  def render("render_template.html" = tpl, %{name: name}) do
+    render_template(tpl, %{name: String.upcase(name)})
   end
 end
 

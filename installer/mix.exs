@@ -3,8 +3,8 @@ defmodule Phoenix.New.Mixfile do
 
   def project do
     [app: :phoenix_new,
-     version: "1.1.2",
-     elixir: "~> 1.0-dev"]
+     version: "1.2.0-rc.0",
+     elixir: "~> 1.2"]
   end
 
   # Configuration for the OTP application

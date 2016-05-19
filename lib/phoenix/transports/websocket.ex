@@ -60,7 +60,7 @@ defmodule Phoenix.Transports.WebSocket do
     conn =
       conn
       |> code_reload(opts, endpoint)
-      |> Plug.Conn.fetch_query_params
+      |> fetch_query_params()
       |> Transport.transport_log(opts[:transport_log])
       |> Transport.force_ssl(handler, endpoint, opts)
       |> Transport.check_origin(handler, endpoint, opts)
@@ -93,12 +93,11 @@ defmodule Phoenix.Transports.WebSocket do
     serializer = Keyword.fetch!(config, :serializer)
     timeout    = Keyword.fetch!(config, :timeout)
 
-    if socket.id, do: socket.endpoint.subscribe(self, socket.id, link: true)
-
+    if socket.id, do: socket.endpoint.subscribe(socket.id, link: true)
 
     {:ok, %{socket: socket,
-            channels: HashDict.new,
-            channels_inverse: HashDict.new,
+            channels: %{},
+            channels_inverse: %{},
             serializer: serializer}, timeout}
   end
 
@@ -112,7 +111,7 @@ defmodule Phoenix.Transports.WebSocket do
       {:reply, reply_msg} ->
         encode_reply(reply_msg, state)
       {:joined, channel_pid, reply_msg} ->
-        encode_reply(reply_msg, put(state, msg.topic, channel_pid))
+        encode_reply(reply_msg, put(state, msg.topic, msg.ref, channel_pid))
       {:error, _reason, error_reply_msg} ->
         encode_reply(error_reply_msg, state)
     end
@@ -120,11 +119,11 @@ defmodule Phoenix.Transports.WebSocket do
 
   @doc false
   def ws_info({:EXIT, channel_pid, reason}, state) do
-    case HashDict.get(state.channels_inverse, channel_pid) do
+    case Map.get(state.channels_inverse, channel_pid) do
       nil   -> {:ok, state}
-      topic ->
+      {topic, join_ref} ->
         new_state = delete(state, topic, channel_pid)
-        encode_reply Transport.on_exit_message(topic, reason), new_state
+        encode_reply Transport.on_exit_message(topic, join_ref, reason), new_state
     end
   end
 
@@ -153,14 +152,19 @@ defmodule Phoenix.Transports.WebSocket do
     end
   end
 
-  defp put(state, topic, channel_pid) do
-    %{state | channels: HashDict.put(state.channels, topic, channel_pid),
-              channels_inverse: HashDict.put(state.channels_inverse, channel_pid, topic)}
+  defp put(state, topic, join_ref, channel_pid) do
+    %{state | channels: Map.put(state.channels, topic, channel_pid),
+              channels_inverse: Map.put(state.channels_inverse, channel_pid, {topic, join_ref})}
   end
 
   defp delete(state, topic, channel_pid) do
-    %{state | channels: HashDict.delete(state.channels, topic),
-              channels_inverse: HashDict.delete(state.channels_inverse, channel_pid)}
+    case Map.fetch(state.channels, topic) do
+      {:ok, ^channel_pid} ->
+        %{state | channels: Map.delete(state.channels, topic),
+                  channels_inverse: Map.delete(state.channels_inverse, channel_pid)}
+      {:ok, _newer_pid} ->
+        %{state | channels_inverse: Map.delete(state.channels_inverse, channel_pid)}
+    end
   end
 
   defp encode_reply(reply, state) do

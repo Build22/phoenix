@@ -3,7 +3,7 @@
 // ## Socket Connection
 //
 // A single connection is established to the server and
-// channels are mulitplexed over the connection.
+// channels are multiplexed over the connection.
 // Connect to the server using the `Socket` class:
 //
 //     let socket = new Socket("/ws", {params: {userToken: "123"}})
@@ -23,7 +23,7 @@
 // events are listened for, messages are pushed to the server, and
 // the channel is joined with ok/error/timeout matches:
 //
-//     let channel = socket.channel("rooms:123", {token: roomToken})
+//     let channel = socket.channel("room:123", {token: roomToken})
 //     channel.on("new_msg", msg => console.log("Got message", msg) )
 //     $input.onEnter( e => {
 //       channel.push("new_msg", {body: e.target.val}, 10000)
@@ -46,6 +46,15 @@
 // Successful joins receive an "ok" status, while unsuccessful joins
 // receive "error".
 //
+// ## Duplicate Join Subscriptions
+//
+// While the client may join any number of topics on any number of channels,
+// the client may only hold a single subscription for each unique topic at any
+// given time. When attempting to create a duplicate subscription,
+// the server will close the existing channel, log a warning, and
+// spawn a new channel for the topic. The client will have their
+// `channel.onClose` callbacks fired for the existing channel, and the new
+// channel join will have its receive hooks processed as normal.
 //
 // ## Pushing Messages
 //
@@ -76,7 +85,7 @@
 // ### onError hooks
 //
 // `onError` hooks are invoked if the socket connection drops, or the channel
-// crashes on the server. In either case, a channel rejoin is attemtped
+// crashes on the server. In either case, a channel rejoin is attempted
 // automatically in an exponential backoff manner.
 //
 // ### onClose hooks
@@ -85,7 +94,78 @@
 // closed on the server, or 2). The client explicitly closed, by calling
 // `channel.leave()`
 //
-
+//
+// ## Presence
+//
+// The `Presence` object provides features for syncing presence information
+// from the server with the client and handling presences joining and leaving.
+//
+// ### Syncing initial state from the server
+//
+// `Presence.syncState` is used to sync the list of presences on the server
+// with the client's state. An optional `onJoin` and `onLeave` callback can
+// be provided to react to changes in the client's local presences across
+// disconnects and reconnects with the server.
+//
+// `Presence.syncDiff` is used to sync a diff of presence join and leave
+// events from the server, as they happen. Like `syncState`, `syncDiff`
+// accepts optional `onJoin` and `onLeave` callbacks to react to a user
+// joining or leaving from a device.
+//
+// ### Listing Presences
+//
+// `Presence.list` is used to return a list of presence information
+// based on the local state of metadata. By default, all presence
+// metadata is returned, but a `listBy` function can be supplied to
+// allow the client to select which metadata to use for a given presence.
+// For example, you may have a user online from different devices with a
+// a metadata status of "online", but they have set themselves to "away"
+// on another device. In this case, they app may choose to use the "away"
+// status for what appears on the UI. The example below defines a `listBy`
+// function which prioritizes the first metadata which was registered for
+// each user. This could be the first tab they opened, or the first device
+// they came online from:
+//
+//     let state = {}
+//     Presence.syncState(state, stateFromServer)
+//     let listBy = (id, {metas: [first, ...rest]}) => {
+//       first.count = rest.length + 1 // count of this user's presences
+//       first.id = id
+//       return first
+//     }
+//     let onlineUsers = Presence.list(state, listBy)
+//
+//
+// ### Example Usage
+//
+//     // detect if user has joined for the 1st time or from another tab/device
+//     let onJoin = (id, current, newPres) => {
+//       if(!current){
+//         console.log("user has entered for the first time", newPres)
+//       } else {
+//         console.log("user additional presence", newPres)
+//       }
+//     }
+//     // detect if user has left from all tabs/devices, or is still present
+//     let onLeave = (id, current, leftPres) => {
+//       if(current.metas.length === 0){
+//         console.log("user has left from all devices", leftPres)
+//       } else {
+//         console.log("user left from a device", leftPres)
+//       }
+//     }
+//     let presences = {} // client's initial empty presence state
+//     // receive initial presence data from server, sent after join
+//     myChannel.on("presences", state => {
+//       Presence.syncState(presences, state, onJoin, onLeave)
+//       displayUsers(Presence.list(presences))
+//     })
+//     // receive "presence_diff" from server, containing join/leave events
+//     myChannel.on("presence_diff", diff => {
+//       Presence.syncDiff(presences, diff, onJoin, onLeave)
+//       this.setState({users: Presence.list(room.presences, listBy)})
+//     })
+//
 const VSN = "1.0.0"
 const SOCKET_STATES = {connecting: 0, open: 1, closing: 2, closed: 3}
 const DEFAULT_TIMEOUT = 10000
@@ -94,6 +174,7 @@ const CHANNEL_STATES = {
   errored: "errored",
   joined: "joined",
   joining: "joining",
+  leaving: "leaving",
 }
 const CHANNEL_EVENTS = {
   close: "phx_close",
@@ -221,21 +302,21 @@ export class Channel {
       this.pushBuffer = []
     })
     this.onClose( () => {
-      this.socket.log("channel", `close ${this.topic}`)
+      this.socket.log("channel", `close ${this.topic} ${this.joinRef()}`)
       this.state = CHANNEL_STATES.closed
       this.socket.remove(this)
     })
     this.onError( reason => {
       this.socket.log("channel", `error ${this.topic}`, reason)
       this.state = CHANNEL_STATES.errored
-      this.rejoinTimer.setTimeout()
+      this.rejoinTimer.scheduleTimeout()
     })
     this.joinPush.receive("timeout", () => {
       if(this.state !== CHANNEL_STATES.joining){ return }
 
       this.socket.log("channel", `timeout ${this.topic}`, this.joinPush.timeout)
       this.state = CHANNEL_STATES.errored
-      this.rejoinTimer.setTimeout()
+      this.rejoinTimer.scheduleTimeout()
     })
     this.on(CHANNEL_EVENTS.reply, (payload, ref) => {
       this.trigger(this.replyEventName(ref), payload)
@@ -243,7 +324,7 @@ export class Channel {
   }
 
   rejoinUntilConnected(){
-    this.rejoinTimer.setTimeout()
+    this.rejoinTimer.scheduleTimeout()
     if(this.socket.isConnected()){
       this.rejoin()
     }
@@ -254,9 +335,9 @@ export class Channel {
       throw(`tried to join multiple times. 'join' can only be called a single time per channel instance`)
     } else {
       this.joinedOnce = true
+      this.rejoin(timeout)
+      return this.joinPush
     }
-    this.rejoin(timeout)
-    return this.joinPush
   }
 
   onClose(callback){ this.on(CHANNEL_EVENTS.close, callback) }
@@ -299,9 +380,10 @@ export class Channel {
   //     channel.leave().receive("ok", () => alert("left!") )
   //
   leave(timeout = this.timeout){
+    this.state = CHANNEL_STATES.leaving
     let onClose = () => {
       this.socket.log("channel", `leave ${this.topic}`)
-      this.trigger(CHANNEL_EVENTS.close, "leave")
+      this.trigger(CHANNEL_EVENTS.close, "leave", this.joinRef())
     }
     let leavePush = new Push(this, CHANNEL_EVENTS.leave, {}, timeout)
     leavePush.receive("ok", () => onClose() )
@@ -321,17 +403,25 @@ export class Channel {
 
   isMember(topic){ return this.topic === topic }
 
+  joinRef(){ return this.joinPush.ref }
+
   sendJoin(timeout){
     this.state = CHANNEL_STATES.joining
     this.joinPush.resend(timeout)
   }
 
-  rejoin(timeout = this.timeout){ this.sendJoin(timeout) }
+  rejoin(timeout = this.timeout){ if(this.state === CHANNEL_STATES.leaving){ return }
+    this.sendJoin(timeout)
+  }
 
-  trigger(triggerEvent, payload, ref){
-    this.onMessage(triggerEvent, payload, ref)
-    this.bindings.filter( bind => bind.event === triggerEvent )
-                 .map( bind => bind.callback(payload, ref) )
+  trigger(event, payload, ref){
+    let {close, error, leave, join} = CHANNEL_EVENTS
+    if(ref && [close, error, leave, join].indexOf(event) >= 0 && ref !== this.joinRef()){
+      return
+    }
+    this.onMessage(event, payload, ref)
+    this.bindings.filter( bind => bind.event === event)
+                 .map( bind => bind.callback(payload, ref))
   }
 
   replyEventName(ref){ return `chan_reply_${ref}` }
@@ -452,7 +542,7 @@ export class Socket {
     this.log("transport", "close", event)
     this.triggerChanError()
     clearInterval(this.heartbeatTimer)
-    this.reconnectTimer.setTimeout()
+    this.reconnectTimer.scheduleTimeout()
     this.stateChangeCallbacks.close.forEach( callback => callback(event) )
   }
 
@@ -478,7 +568,7 @@ export class Socket {
   isConnected(){ return this.connectionState() === "open" }
 
   remove(channel){
-    this.channels = this.channels.filter( c => !c.isMember(channel.topic) )
+    this.channels = this.channels.filter(c => c.joinRef() !== channel.joinRef())
   }
 
   channel(topic, chanParams = {}){
@@ -692,6 +782,84 @@ export class Ajax {
 Ajax.states = {complete: 4}
 
 
+
+export var Presence = {
+
+  syncState(state, newState, onJoin, onLeave){
+    let joins = {}
+    let leaves = {}
+
+    this.map(state, (key, presence) => {
+      if(!newState[key]){
+        leaves[key] = this.clone(presence)
+      }
+    })
+    this.map(newState, (key, newPresence) => {
+      let currentPresence = state[key]
+      if(currentPresence){
+        let newRefs = newPresence.metas.map(m => m.phx_ref)
+        let curRefs = currentPresence.metas.map(m => m.phx_ref)
+        let joinedMetas = newPresence.metas.filter(m => curRefs.indexOf(m.phx_ref) < 0)
+        let leftMetas = currentPresence.metas.filter(m => newRefs.indexOf(m.phx_ref) < 0)
+        if(joinedMetas.length > 0){
+          joins[key] = newPresence
+          joins[key].metas = joinedMetas
+        }
+        if(leftMetas.length > 0){
+          leaves[key] = this.clone(currentPresence)
+          leaves[key].metas = leftMetas
+        }
+      } else {
+        joins[key] = newPresence
+      }
+    })
+    this.syncDiff(state, {joins: joins, leaves: leaves}, onJoin, onLeave)
+  },
+
+  syncDiff(state, {joins, leaves}, onJoin, onLeave){
+    if(!onJoin){ onJoin = function(){} }
+    if(!onLeave){ onLeave = function(){} }
+
+    this.map(joins, (key, newPresence) => {
+      let currentPresence = state[key]
+      state[key] = newPresence
+      if(currentPresence){
+        state[key].metas.unshift(...currentPresence.metas)
+      }
+      onJoin(key, currentPresence, newPresence)
+    })
+    this.map(leaves, (key, leftPresence) => {
+      let currentPresence = state[key]
+      if(!currentPresence){ return }
+      let refsToRemove = leftPresence.metas.map(m => m.phx_ref)
+      currentPresence.metas = currentPresence.metas.filter(p => {
+        return refsToRemove.indexOf(p.phx_ref) < 0
+      })
+      onLeave(key, currentPresence, leftPresence)
+      if(currentPresence.metas.length === 0){
+        delete state[key]
+      }
+    })
+  },
+
+  list(presences, chooser){
+    if(!chooser){ chooser = function(key, pres){ return pres } }
+
+    return this.map(presences, (key, presence) => {
+      return chooser(key, presence)
+    })
+  },
+
+  // private
+
+  map(obj, func){
+    return Object.getOwnPropertyNames(obj).map(key => func(key, obj[key]))
+  },
+
+  clone(obj){ return JSON.parse(JSON.stringify(obj)) }
+}
+
+
 // Creates a timer that accepts a `timerCalc` function to perform
 // calculated timeout retries, such as exponential backoff.
 //
@@ -700,10 +868,10 @@ Ajax.states = {complete: 4}
 //    let reconnectTimer = new Timer(() => this.connect(), function(tries){
 //      return [1000, 5000, 10000][tries - 1] || 10000
 //    })
-//    reconnectTimer.setTimeout() // fires after 1000
-//    reconnectTimer.setTimeout() // fires after 5000
+//    reconnectTimer.scheduleTimeout() // fires after 1000
+//    reconnectTimer.scheduleTimeout() // fires after 5000
 //    reconnectTimer.reset()
-//    reconnectTimer.setTimeout() // fires after 1000
+//    reconnectTimer.scheduleTimeout() // fires after 1000
 //
 class Timer {
   constructor(callback, timerCalc){
@@ -718,8 +886,8 @@ class Timer {
     clearTimeout(this.timer)
   }
 
-  // Cancels any previous setTimeout and schedules callback
-  setTimeout(){
+  // Cancels any previous scheduleTimeout and schedules callback
+  scheduleTimeout(){
     clearTimeout(this.timer)
 
     this.timer = setTimeout(() => {
